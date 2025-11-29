@@ -1,6 +1,6 @@
 <change>
 <file>server.js</file>
-<description>Added an explicit check for the DATABASE_URL environment variable. The server will now exit with a clear error message if the database is not connected, making debugging much easier.</description>
+<description>Added /api/register and /api/login endpoints using pgcrypto for secure password handling.</description>
 <content><![CDATA[
 /**
 * Ayinet Backend API Server
@@ -22,7 +22,7 @@ app.use(express.json());
 if (!process.env.DATABASE_URL) {
 console.error("FATAL ERROR: DATABASE_URL environment variable is not set.");
 console.error("Please connect a PostgreSQL database and set the DATABASE_URL variable in your deployment environment.");
-process.exit(1); // Exit the process with an error code
+process.exit(1);
 }
 const pool = new Pool({
 connectionString: process.env.DATABASE_URL,
@@ -33,7 +33,7 @@ rejectUnauthorized: false // Required for services like Railway
 // Socket.IO Setup
 const io = new Server(server, {
 cors: {
-origin: "*", // Allow all origins for demo; restrict in production
+origin: "*",
 methods: ["GET", "POST"]
 }
 });
@@ -49,10 +49,10 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL,
     name VARCHAR(100) NOT NULL,
     avatar_url TEXT,
-    location VARCHAR(100),
+    location VARCHAR(100) DEFAULT 'Haiti',
     is_diaspora BOOLEAN DEFAULT FALSE,
     is_business BOOLEAN DEFAULT FALSE,
-    occupation VARCHAR(100),
+    occupation VARCHAR(100) DEFAULT 'Member',
     bio TEXT,
     phone VARCHAR(20),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -190,12 +190,58 @@ console.log(User ${userId} disconnected.);
 });
 });
 // --- REST API ROUTES ---
+// AUTH: Register
+app.post('/api/register', async (req, res) => {
+const { name, email, password } = req.body;
+try {
+// Use pgcrypto's crypt() function to hash the password securely in the database
+const result = await pool.query(
+INSERT INTO users (name, email, password_hash, avatar_url) VALUES ($1, $2, crypt($3, gen_salt('bf')), $4) RETURNING id, name, email, location, avatar_url, is_business,
+[name, email, password, https://api.dicebear.com/7.x/initials/svg?seed=${name}]
+);
+res.status(201).json(result.rows[0]);
+} catch (err) {
+console.error(err);
+res.status(500).json({ error: 'Registration failed. Email might be taken.' });
+}
+});
+// AUTH: Login
+app.post('/api/login', async (req, res) => {
+const { email, password } = req.body;
+try {
+// Verify password using crypt() match
+const result = await pool.query(
+SELECT id, name, email, location, avatar_url, is_business, is_diaspora FROM users WHERE email = $1 AND password_hash = crypt($2, password_hash),
+[email, password]
+);
+code
+Code
+if (result.rows.length > 0) {
+        res.json(result.rows[0]);
+    } else {
+        res.status(401).json({ error: 'Invalid credentials' });
+    }
+} catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Login failed' });
+}
+});
 // GET: Posts Feed
 app.get('/api/posts', async (req, res) => {
 try {
-const { rows } = await pool.query('SELECT * FROM posts ORDER BY created_at DESC LIMIT 20');
-res.json(rows);
-} catch (err) { res.status(500).json([]); }
+const { rows } = await pool.query(SELECT p.*, json_build_object('id', u.id, 'name', u.name, 'avatar', u.avatar_url, 'location', u.location, 'isDiaspora', u.is_diaspora, 'occupation', u.occupation) as user FROM posts p JOIN users u ON p.user_id = u.id ORDER BY p.created_at DESC LIMIT 20);
+// Map DB fields to frontend expected fields if necessary
+const mappedRows = rows.map(row => ({
+...row,
+userId: row.user_id,
+timestamp: new Date(row.created_at).getTime(),
+user: { ...row.user, isDiaspora: row.user.isDiaspora }
+}));
+res.json(mappedRows);
+} catch (err) {
+console.error(err);
+res.status(500).json([]);
+}
 });
 // POST: Create a Post
 app.post('/api/posts', async (req, res) => {
@@ -205,28 +251,57 @@ const result = await pool.query(
 'INSERT INTO posts (user_id, content, post_type, is_global, city) VALUES ($1, $2, $3, $4, $5) RETURNING *',
 [userId, content, type, isGlobal, location]
 );
-res.status(201).json(result.rows[0]);
-} catch (err) { res.status(500).json({ error: 'Failed to create post' }); }
+// Fetch full user details to return with post for immediate UI update
+const userRes = await pool.query('SELECT id, name, avatar_url as avatar, location, is_diaspora as "isDiaspora", occupation FROM users WHERE id = $1', [userId]);
+code
+Code
+const newPost = {
+        ...result.rows[0],
+        userId: result.rows[0].user_id,
+        timestamp: new Date(result.rows[0].created_at).getTime(),
+        user: userRes.rows[0]
+    };
+    
+    res.status(201).json(newPost);
+} catch (err) { 
+    console.error(err);
+    res.status(500).json({ error: 'Failed to create post' }); 
+}
 });
 // GET: Marketplace Items
 app.get('/api/market', async (req, res) => {
 try {
-const { rows } = await pool.query('SELECT * FROM market_items ORDER BY created_at DESC LIMIT 50');
-res.json(rows);
+const { rows } = await pool.query(SELECT m.*, json_build_object('id', u.id, 'name', u.name, 'avatar', u.avatar_url, 'location', u.location, 'isBusiness', u.is_business) as seller FROM market_items m JOIN users u ON m.seller_id = u.id ORDER BY m.created_at DESC LIMIT 50);
+const mappedRows = rows.map(row => ({
+...row,
+image: row.image_url,
+seller: row.seller
+}));
+res.json(mappedRows);
 } catch (err) { res.status(500).json([]); }
 });
 // GET: Active Alerts
 app.get('/api/alerts', async (req, res) => {
 try {
 const { rows } = await pool.query('SELECT * FROM alerts WHERE is_active = TRUE');
-res.json(rows);
+const mappedRows = rows.map(row => ({
+...row,
+timestamp: new Date(row.created_at).getTime()
+}));
+res.json(mappedRows);
 } catch (err) { res.status(500).json([]); }
 });
 // GET: Groups
 app.get('/api/groups', async (req, res) => {
 try {
 const { rows } = await pool.query('SELECT * FROM groups ORDER BY members_count DESC');
-res.json(rows);
+const mappedRows = rows.map(row => ({
+...row,
+image: row.image_url,
+members: row.members_count,
+creatorId: row.creator_id
+}));
+res.json(mappedRows);
 } catch(err) { res.status(500).json([]); }
 });
 // POST: Create Group
@@ -234,10 +309,16 @@ app.post('/api/groups', async (req, res) => {
 const { name, category, description, creatorId } = req.body;
 try {
 const result = await pool.query(
-'INSERT INTO groups (name, category, description, creator_id) VALUES ($1, $2, $3, $4) RETURNING *',
-[name, category, description, creatorId]
+'INSERT INTO groups (name, category, description, creator_id, image_url, members_count) VALUES ($1, $2, $3, $4, $5, 
+{name}/200/200`, 1]
 );
-res.status(201).json(result.rows[0]);
+const row = result.rows[0];
+res.status(201).json({
+...row,
+image: row.image_url,
+members: row.members_count,
+creatorId: row.creator_id
+});
 } catch(err) { res.status(500).send(err); }
 });
 // DELETE: Group
@@ -251,7 +332,13 @@ res.sendStatus(200);
 app.get('/api/reports', async (req, res) => {
 try {
 const { rows } = await pool.query("SELECT * FROM reports WHERE status = 'pending' ORDER BY created_at DESC");
-res.json(rows);
+const mappedRows = rows.map(row => ({
+...row,
+targetId: row.target_id,
+contentPreview: row.content_preview,
+timestamp: new Date(row.created_at).getTime()
+}));
+res.json(mappedRows);
 } catch(err) { res.status(500).json([]); }
 });
 // POST: Create Report
@@ -284,10 +371,18 @@ await pool.query(
 );
 await pool.query('UPDATE users SET is_business = TRUE WHERE id = $1', [userId]);
 await pool.query('COMMIT');
-res.status(200).json({ message: 'Business profile created' });
+code
+Code
+// Return updated user
+    const result = await pool.query('SELECT id, name, email, location, avatar_url, is_business, is_diaspora FROM users WHERE id = $1', [userId]);
+    const user = result.rows[0];
+    res.status(200).json({ 
+        ...user,
+        businessProfile: { name, category, description, followers: 0, rating: 5.0, catalog: [] } 
+    });
 } catch (err) {
-await pool.query('ROLLBACK');
-res.status(500).json({ error: 'Failed to create business profile' });
+    await pool.query('ROLLBACK');
+    res.status(500).json({ error: 'Failed to create business profile' });
 }
 });
 // Start Server & Initialize DB
@@ -295,4 +390,6 @@ server.listen(PORT, async () => {
 console.log(Ayinet Server running on port ${PORT});
 await initDB();
 });
-
+]]></content>
+</change>
+</changes>
