@@ -1,6 +1,6 @@
 <change>
 <file>server.js</file>
-<description>Added /api/register and /api/login endpoints using pgcrypto for secure password handling.</description>
+<description>Added POST /api/market endpoint to handle creating new marketplace items.</description>
 <content><![CDATA[
 /**
 * Ayinet Backend API Server
@@ -194,7 +194,6 @@ console.log(User ${userId} disconnected.);
 app.post('/api/register', async (req, res) => {
 const { name, email, password } = req.body;
 try {
-// Use pgcrypto's crypt() function to hash the password securely in the database
 const result = await pool.query(
 INSERT INTO users (name, email, password_hash, avatar_url) VALUES ($1, $2, crypt($3, gen_salt('bf')), $4) RETURNING id, name, email, location, avatar_url, is_business,
 [name, email, password, https://api.dicebear.com/7.x/initials/svg?seed=${name}]
@@ -209,7 +208,6 @@ res.status(500).json({ error: 'Registration failed. Email might be taken.' });
 app.post('/api/login', async (req, res) => {
 const { email, password } = req.body;
 try {
-// Verify password using crypt() match
 const result = await pool.query(
 SELECT id, name, email, location, avatar_url, is_business, is_diaspora FROM users WHERE email = $1 AND password_hash = crypt($2, password_hash),
 [email, password]
@@ -230,7 +228,6 @@ if (result.rows.length > 0) {
 app.get('/api/posts', async (req, res) => {
 try {
 const { rows } = await pool.query(SELECT p.*, json_build_object('id', u.id, 'name', u.name, 'avatar', u.avatar_url, 'location', u.location, 'isDiaspora', u.is_diaspora, 'occupation', u.occupation) as user FROM posts p JOIN users u ON p.user_id = u.id ORDER BY p.created_at DESC LIMIT 20);
-// Map DB fields to frontend expected fields if necessary
 const mappedRows = rows.map(row => ({
 ...row,
 userId: row.user_id,
@@ -251,7 +248,6 @@ const result = await pool.query(
 'INSERT INTO posts (user_id, content, post_type, is_global, city) VALUES ($1, $2, $3, $4, $5) RETURNING *',
 [userId, content, type, isGlobal, location]
 );
-// Fetch full user details to return with post for immediate UI update
 const userRes = await pool.query('SELECT id, name, avatar_url as avatar, location, is_diaspora as "isDiaspora", occupation FROM users WHERE id = $1', [userId]);
 code
 Code
@@ -279,6 +275,27 @@ seller: row.seller
 }));
 res.json(mappedRows);
 } catch (err) { res.status(500).json([]); }
+});
+// POST: Create Marketplace Item (New Feature)
+app.post('/api/market', async (req, res) => {
+const { seller, title, price, currency, category, vertical, description, image, location } = req.body;
+try {
+const result = await pool.query(
+'INSERT INTO market_items (seller_id, title, price, currency, category, vertical, description, image_url, location) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+[seller.id, title, price, currency, category, vertical, description, image, location]
+);
+code
+Code
+const newItem = {
+        ...result.rows[0],
+        image: result.rows[0].image_url,
+        seller: seller
+    };
+    res.status(201).json(newItem);
+} catch (err) { 
+    console.error(err);
+    res.status(500).json({ error: 'Failed to create item' }); 
+}
 });
 // GET: Active Alerts
 app.get('/api/alerts', async (req, res) => {
@@ -373,8 +390,7 @@ await pool.query('UPDATE users SET is_business = TRUE WHERE id = $1', [userId]);
 await pool.query('COMMIT');
 code
 Code
-// Return updated user
-    const result = await pool.query('SELECT id, name, email, location, avatar_url, is_business, is_diaspora FROM users WHERE id = $1', [userId]);
+const result = await pool.query('SELECT id, name, email, location, avatar_url, is_business, is_diaspora FROM users WHERE id = $1', [userId]);
     const user = result.rows[0];
     res.status(200).json({ 
         ...user,
