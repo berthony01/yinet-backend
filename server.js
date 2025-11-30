@@ -1,14 +1,15 @@
+server.js
 <change>
 <file>server.js</file>
-<description>Updated CORS configuration to be maximally permissive to fix 'Failed to fetch' errors, and ensured the server listens on the correct port.</description>
+<description>Updated CORS to be permissive, and fixed SQL queries to return camelCase field names (avatar, isDiaspora) matching the frontend User interface.</description>
 <content><![CDATA[
 /**
 * Ayinet Backend API Server
 * Stack: Node.js, Express, PostgreSQL, Socket.IO
 */
 const express = require('express');const cors = require('cors');const { Pool } = require('pg');const http = require('http');const { Server } = require("socket.io");
-const app = express();const server = http.createServer(app);// Railway injects the PORT variable.// If running locally, it defaults to 5000.const PORT = process.env.PORT || 5000;
-// Middleware// Allow all origins to prevent "Failed to fetch" / CORS errors during developmentapp.use(cors({origin: '*',methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],allowedHeaders: ['Content-Type', 'Authorization']}));app.use(express.json());
+const app = express();const server = http.createServer(app);const PORT = process.env.PORT || 5000;
+// Middleware// Enable CORS for all domains to fix "Failed to fetch" errors on mobile/webapp.use(cors({origin: '*',methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],allowedHeaders: ['Content-Type', 'Authorization']}));app.use(express.json());
 // --- Database Connection ---if (!process.env.DATABASE_URL) {console.error("FATAL ERROR: DATABASE_URL environment variable is not set.");process.exit(1);}
 const pool = new Pool({connectionString: process.env.DATABASE_URL,ssl: {rejectUnauthorized: false // Required for services like Railway}});
 // Socket.IO Setupconst io = new Server(server, {cors: {origin: "*",methods: ["GET", "POST"]}});
@@ -134,9 +135,9 @@ const savedMsg = {
 });
 socket.on('disconnect', () => {if (userId) onlineUsers.delete(userId);});});
 // --- REST API ROUTES ---
-// HEALTH CHECK (For debugging connectivity)app.get('/', (req, res) => {res.send('Ayinet Backend is Running!');});
-// AUTH: Registerapp.post('/api/register', async (req, res) => {const { name, email, password } = req.body;try {const result = await pool.query(INSERT INTO users (name, email, password_hash, avatar_url) VALUES ($1, $2, crypt($3, gen_salt('bf')), $4) RETURNING id, name, email, location, avatar_url, is_business, is_diaspora, occupation,[name, email, password, https://api.dicebear.com/7.x/initials/svg?seed=${name}]);res.status(201).json(result.rows[0]);} catch (err) {console.error(err);res.status(500).json({ error: 'Registration failed. Email may be taken.' });}});
-// AUTH: Loginapp.post('/api/login', async (req, res) => {const { email, password } = req.body;try {const result = await pool.query(SELECT id, name, email, location, avatar_url, is_business, is_diaspora, occupation FROM users WHERE email = $1 AND password_hash = crypt($2, password_hash),[email, password]);
+// ROOT: Health Checkapp.get('/', (req, res) => {res.send('Ayinet API is Online');});
+// AUTH: Registerapp.post('/api/register', async (req, res) => {const { name, email, password } = req.body;try {// We map the database columns (snake_case) to frontend expected keys (camelCase) using 'AS'const result = await pool.query(INSERT INTO users (name, email, password_hash, avatar_url) VALUES ($1, $2, crypt($3, gen_salt('bf')), $4) RETURNING id, name, email, location, avatar_url as avatar, is_business as "isBusiness", is_diaspora as "isDiaspora", occupation,[name, email, password, https://api.dicebear.com/7.x/initials/svg?seed=${name}]);res.status(201).json(result.rows[0]);} catch (err) {console.error(err);res.status(500).json({ error: 'Registration failed. Email may be taken.' });}});
+// AUTH: Loginapp.post('/api/login', async (req, res) => {const { email, password } = req.body;try {const result = await pool.query(SELECT id, name, email, location, avatar_url as avatar, is_business as "isBusiness", is_diaspora as "isDiaspora", occupation FROM users WHERE email = $1 AND password_hash = crypt($2, password_hash),[email, password]);
 codeCode
 if (result.rows.length > 0) {
         res.json(result.rows[0]);
@@ -148,7 +149,20 @@ if (result.rows.length > 0) {
     res.status(500).json({ error: 'Login failed' });
 }
 });
-// GET: Posts Feedapp.get('/api/posts', async (req, res) => {try {const { rows } = await pool.query(SELECT p.*, json_build_object('id', u.id, 'name', u.name, 'avatar', u.avatar_url, 'location', u.location, 'isDiaspora', u.is_diaspora, 'occupation', u.occupation) as user FROM posts p JOIN users u ON p.user_id = u.id ORDER BY p.created_at DESC LIMIT 20);const mappedRows = rows.map(row => ({...row,userId: row.user_id,timestamp: new Date(row.created_at).getTime(),user: { ...row.user, isDiaspora: row.user.isDiaspora }}));res.json(mappedRows);} catch (err) {res.status(500).json([]);}});
+// GET: Posts Feedapp.get('/api/posts', async (req, res) => {try {const { rows } = await pool.query(SELECT p.*, json_build_object( 'id', u.id, 'name', u.name, 'avatar', u.avatar_url, 'location', u.location, 'isDiaspora', u.is_diaspora, 'occupation', u.occupation ) as user FROM posts p JOIN users u ON p.user_id = u.id ORDER BY p.created_at DESC LIMIT 20);
+codeCode
+const mappedRows = rows.map(row => ({
+        ...row,
+        userId: row.user_id,
+        timestamp: new Date(row.created_at).getTime(),
+        // Check if user object inside post needs field mapping too, but json_build_object handled keys above
+        user: { ...row.user, isDiaspora: row.user.isDiaspora }
+    }));
+    res.json(mappedRows);
+} catch (err) { 
+    res.status(500).json([]); 
+}
+});
 // POST: Create Postapp.post('/api/posts', async (req, res) => {const { userId, content, type, isGlobal, location, mediaUrl } = req.body;try {const result = await pool.query('INSERT INTO posts (user_id, content, post_type, is_global, city, media_url) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',[userId, content, type, isGlobal, location, mediaUrl]);const userRes = await pool.query('SELECT id, name, avatar_url as avatar, location, is_diaspora as "isDiaspora", occupation FROM users WHERE id = $1', [userId]);
 codeCode
 const newPost = {
